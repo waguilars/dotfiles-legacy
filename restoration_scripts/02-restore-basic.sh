@@ -1,3 +1,5 @@
+mkdir -p $HOME/.local/bin
+
 # Restore common
 sudo apt-get install xclip wget gpg apt-transport-https
 
@@ -5,9 +7,13 @@ sudo apt-get install xclip wget gpg apt-transport-https
 cargo install bat exa
 
 # Restore zsh apps
-curl -sS https://starship.rs/install.sh | sh # Starship prompt
+curl -sS https://starship.rs/install.sh | sh -s -- --yes # Starship prompt
 
-curl -fsSL https://fnm.vercel.app/install | bash #fnm for node version management
+# Node management
+curl -fsSL https://fnm.vercel.app/install | bash  && #fnm for node version management
+ln -s $HOME/.local/share/fnm/fnm $HOME/.local/bin/fnm &&
+fnm install --lts &&
+npm install -g tldr
 
 # Code MS Repo
 wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
