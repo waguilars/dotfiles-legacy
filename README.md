@@ -1,5 +1,5 @@
 <h1 align="center">
-  .dotfiles created using <a href="https://github.com/CodelyTV/dotly">🌚 dotly</a>
+  dotfiles created using <a href="https://github.com/CodelyTV/dotly">🌚 dotly</a>
 </h1>
 
 ## Restore your Dotfiles manually
