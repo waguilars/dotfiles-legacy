@@ -3,6 +3,7 @@ zmodule zimfw/environment
 zmodule zimfw/git-info
 zmodule zimfw/input
 zmodule zimfw/completion
+zmodule https://github.com/Aloxaf/fzf-tab.git
 
 zmodule zsh-users/zsh-syntax-highlighting
 zmodule zsh-users/zsh-autosuggestions
@@ -10,7 +11,5 @@ zmodule zsh-users/zsh-autosuggestions
 # Custom
 zmodule https://github.com/wfxr/forgit
 zmodule dominik-schwabe/zsh-fnm
-zmodule ryutok/rust-zsh-completions -s rust.plugin.zsh
-zmodule https://github.com/Aloxaf/fzf-tab.git
 # zmodule lukechilds/zsh-nvm
 zmodule gradle/gradle-completion

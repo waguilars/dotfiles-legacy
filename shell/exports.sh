@@ -9,7 +9,7 @@ export CODELY_THEME_PWD_MODE="short" # full, short, home_relative
 # ------------------------------------------------------------------------------
 # Languages
 # ------------------------------------------------------------------------------
-export JAVA_HOME='/usr/lib/jvm/adoptopenjdk-11-hotspot-amd64'
+# export JAVA_HOME='/usr/lib/jvm/adoptopenjdk-11-hotspot-amd64' # managed by sdkman
 export GEM_HOME="$HOME/.gem"
 export GOPATH="$HOME/.go"
 export DENO_INSTALL="$HOME/.deno"
