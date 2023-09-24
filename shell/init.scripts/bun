@@ -1,0 +1,11 @@
+# If bun.sh is installed, load the config
+
+if [ -f "$HOME/.bun/bin/bun" ]; then    
+    # bun completions
+    [ -s "/home/will/.bun/_bun" ] && source "/home/will/.bun/_bun"
+
+    # bun
+    export BUN_INSTALL="$HOME/.bun"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+fi
+
