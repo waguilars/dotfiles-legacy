@@ -9,18 +9,17 @@ export CODELY_THEME_PWD_MODE="short" # full, short, home_relative
 # ------------------------------------------------------------------------------
 # Languages
 # ------------------------------------------------------------------------------
-# export JAVA_HOME='/usr/lib/jvm/adoptopenjdk-11-hotspot-amd64' # managed by sdkman
 export GEM_HOME="$HOME/.gem"
 export GOPATH="$HOME/.go"
 export DENO_INSTALL="$HOME/.deno"
+export BUN_INSTALL="$HOME/.bun"
 
 # ------------------------------------------------------------------------------
 # Custom Exports
 # ------------------------------------------------------------------------------
 export AQUA_ROOT_DIR="$HOME/.local/share/aquaproj-aqua"
 export AQUA_GLOBAL_CONFIG="$HOME/.dotfiles/aqua.yaml"
-export NVM_LAZY_LOAD=true
-export NVM_COMPLETION=true
+export PNPM_HOME="$HOME/.local/share/pnpm"
 export FZF_DEFAULT_OPTS="
 --no-sort
 --reverse
@@ -41,6 +40,8 @@ export FZF_DEFAULT_OPTS="
 # Path - The higher it is, the more priority it has
 # ------------------------------------------------------------------------------
 export path=(
+  "$HOME/.opencode/bin"
+  "$PNPM_HOME/bin"
   "$HOME/bin"
   "$HOME/.local/bin"
   "$DOTLY_PATH/bin"
@@ -51,6 +52,7 @@ export path=(
   "$DENO_INSTALL/bin"
   "$HOME/.cargo/bin"
   "$AQUA_ROOT_DIR/bin"
+  "$BUN_INSTALL/bin"
   "/usr/games"
   "/usr/local/opt/ruby/bin"
   "/usr/local/opt/python/libexec/bin"

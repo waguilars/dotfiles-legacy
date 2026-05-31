@@ -10,6 +10,4 @@ zmodule zsh-users/zsh-autosuggestions
 
 # Custom
 zmodule https://github.com/wfxr/forgit
-zmodule dominik-schwabe/zsh-fnm
-# zmodule lukechilds/zsh-nvm
 zmodule gradle/gradle-completion

@@ -121,6 +121,7 @@ setopt +o nomatch
 ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets)
 
 source "$DOTFILES_PATH/shell/init.sh"
+source "$DOTFILES_PATH/shell/hooks/_init.sh"
 
 # Start Zim
 # source "$ZIM_HOME/init.zsh"
@@ -136,8 +137,7 @@ ZSH_HIGHLIGHT_MAXLENGTH=300
 source "$DOTLY_PATH/shell/zsh/bindings/dot.zsh"
 source "$DOTLY_PATH/shell/zsh/bindings/reverse_search.zsh"
 source "$DOTFILES_PATH/shell/zsh/key-bindings.zsh"
-
-# source "$DOTFILES_PATH/shell/init.scripts/_init.sh"
+source "$DOTFILES_PATH/shell/zsh/plugins/sudo.zsh"
 
 # disable sort when completing `git checkout`
 zstyle ':completion:*:git-checkout:*' sort false
@@ -145,26 +145,7 @@ zstyle ':completion:*:git-checkout:*' sort false
 zstyle ':completion:*:descriptions' format '[%d]'
 # set list-colors to enable filename colorizing
 zstyle ':completion:*' list-colors ${(s.:.)LS_COLORS}
-# preview directory's content with exa when completing cd
-zstyle ':fzf-tab:complete:cd:*' fzf-preview 'exa -1 --color=always $realpath'
+# preview directory's content with eza when completing cd
+zstyle ':fzf-tab:complete:cd:*' fzf-preview 'eza -1 --color=always $realpath'
 # switch group using `,` and `.`
 zstyle ':fzf-tab:*' switch-group ',' '.'
-
-if [[ -n ${_DOTFILES_ZSH_INIT-} && -z ${_DOTFILES_ZSH_HOOKS-} ]]; then
-  _DOTFILES_ZSH_HOOKS=1
-  eval "$(mise activate zsh)"
-  eval "$(starship init zsh)"
-  eval "$(zoxide init zsh)"
-  eval "$(atuin init zsh)"
-fi
-
-# pnpm
-export PNPM_HOME="/home/waguilar/.local/share/pnpm"
-case ":$PATH:" in
-  *":$PNPM_HOME/bin:"*) ;;
-  *) export PATH="$PNPM_HOME/bin:$PATH" ;;
-esac
-# pnpm end
-
-# opencode
-export PATH=/home/waguilar/.opencode/bin:$PATH
