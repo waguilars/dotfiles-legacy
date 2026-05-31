@@ -23,6 +23,10 @@ alias ...="cd ../.."
 alias dotfiles='cd $DOTFILES_PATH'
 
 # Git
+alias lzg='lazygit'
+
+# Docker
+alias lzd='lazydocker'
 
 # Utils
 alias k='kill -9'
