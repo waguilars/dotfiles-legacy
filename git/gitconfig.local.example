@@ -1,0 +1,15 @@
+# Copy to gitconfig.local (gitignored) and fill in your work email.
+#
+#   cp gitconfig.local.example gitconfig.local
+
+[author]
+	work = you@company.com
+	personal = 52500170+waguilars@users.noreply.github.com
+
+# Optional: override default user.email for all repos
+# [user]
+# 	email = you@company.com
+
+# Optional: auto-use work email only inside work directories
+# [includeIf "gitdir:~/work/"]
+# 	path = gitconfig.work

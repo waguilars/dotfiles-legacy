@@ -17,7 +17,8 @@ export DENO_INSTALL="$HOME/.deno"
 # ------------------------------------------------------------------------------
 # Custom Exports
 # ------------------------------------------------------------------------------
-
+export AQUA_ROOT_DIR="$HOME/.local/share/aquaproj-aqua"
+export AQUA_GLOBAL_CONFIG="$HOME/.dotfiles/aqua.yaml"
 export NVM_LAZY_LOAD=true
 export NVM_COMPLETION=true
 export FZF_DEFAULT_OPTS="
@@ -49,6 +50,7 @@ export path=(
   "$GOPATH/bin"
   "$DENO_INSTALL/bin"
   "$HOME/.cargo/bin"
+  "$AQUA_ROOT_DIR/bin"
   "/usr/games"
   "/usr/local/opt/ruby/bin"
   "/usr/local/opt/python/libexec/bin"

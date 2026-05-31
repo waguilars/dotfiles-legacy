@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "Skills excluded from opencode, cursor, and pi agent skill directories.",
+  "skills": [
+    "branch-pr",
+    "chained-pr",
+    "go-testing",
+    "issue-creation",
+    "work-unit-commits",
+    "cognitive-doc-design",
+    "comment-writer"
+  ],
+  "agents": {
+    "opencode": {
+      "skills_dirs": ["~/.config/opencode/skills"]
+    },
+    "cursor": {
+      "skills_dirs": ["~/.cursor/skills"]
+    },
+    "pi": {
+      "skills_dirs": [
+        "~/.pi/agent/skills"
+      ]
+    }
+  }
+}

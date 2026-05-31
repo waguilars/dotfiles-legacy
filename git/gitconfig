@@ -1,12 +1,37 @@
-
 [user]
 	name = Wilson Aguilar
 	email = 52500170+waguilars@users.noreply.github.com
+
+[include]
+	path = $HOME/.dotfiles/git/gitconfig.local
+
 [commit]
 	gpgsign = false
+
 [init]
-	defaultbranch = main
+	defaultBranch = main
+
 [credential]
 	helper = store
+
 [core]
+	autocrlf = input
+	eol = lf
+	pager = delta
 	excludesfile = ~/.gitignore_global
+
+[interactive]
+	diffFilter = delta --color-only
+
+[delta]
+	navigate = true
+	line-numbers = true
+	side-by-side = true
+
+[merge]
+	conflictStyle = zdiff3
+
+[alias]
+	work = !git config -f "$HOME/.dotfiles/git/gitconfig.local" user.email "$(git config --get author.work)"
+	personal = !git config -f "$HOME/.dotfiles/git/gitconfig.local" user.email "$(git config --get author.personal)"
+	clean-branches = !~/.dotfiles/bin/git-clean-branches
