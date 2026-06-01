@@ -1,5 +1,10 @@
 git/gitconfig.local
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
 shell/zsh/.zim/*
 shell/zsh/**/**.zwc
 shell/zsh/**/**.zwc.old

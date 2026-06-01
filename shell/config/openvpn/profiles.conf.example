@@ -1,0 +1,18 @@
+# Copy to ~/.config/openvpn/profiles.conf
+# Plantilla en dotfiles: shell/config/openvpn/profiles.conf.example
+#
+#   vpn secrets init
+#   vpn secrets set vivido
+#   vpn connect vivido
+
+[vivido]
+config=%h/.config/openvpn/vivido.ovpn
+username=tu.usuario
+
+[quito]
+config=%h/.config/openvpn/otp_quito.ovpn
+username=tu.usuario
+
+[nj]
+config=%h/.config/openvpn/nj.ovpn
+username=tu.usuario

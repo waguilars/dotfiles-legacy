@@ -1,0 +1,10 @@
+# Never commit decrypted or private key material
+identity.age
+secrets.age
+secrets.gpg
+profiles.conf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class

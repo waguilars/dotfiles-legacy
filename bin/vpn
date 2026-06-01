@@ -1,0 +1,621 @@
+#!/usr/bin/env bash
+# OpenVPN: age-encrypted JSON secrets + Python (any password symbols) + TOTP.
+set -euo pipefail
+
+readonly VERSION=3.2.0
+readonly OPENVPN_DIR="${VPN_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/openvpn}"
+readonly VPN_LOG="$OPENVPN_DIR/openvpn.log"
+readonly VPN_PIDFILE="$OPENVPN_DIR/openvpn.pid"
+readonly PROFILES_FILE="${VPN_PROFILES:-$OPENVPN_DIR/profiles.conf}"
+readonly SECRETS_AGE="$OPENVPN_DIR/secrets.age"
+readonly SECRETS_GPG="$OPENVPN_DIR/secrets.gpg"
+readonly IDENTITY_AGE="$OPENVPN_DIR/identity.age"
+readonly AUTH_DIR="${XDG_RUNTIME_DIR:-/dev/shm}"
+readonly KEYCTL_KEY=vpn_secrets
+readonly KEYCTL_TTL=900
+
+readonly DOTFILES_PATH="${DOTFILES_PATH:-$HOME/.dotfiles}"
+readonly VPN_SECRETS_PY="${DOTFILES_PATH}/shell/config/openvpn/vpn_secrets.py"
+
+AUTH_FILE=
+SECRETS_PLAIN=
+
+die() {
+  echo "vpn: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+vpn $VERSION — OpenVPN with encrypted JSON secrets + auto TOTP
+
+Connect:
+  vpn                      Pick profile and connect
+  vpn connect [-b] <profile> Connect (-b = background/daemon, default)
+  vpn logs                   Tail openvpn log (background mode)
+  vpn debug <profile>      Show credentials (repr + hex) — no connect
+  vpn list | vpn status | vpn disconnect
+
+Secrets:
+  vpn secrets init
+  vpn secrets set <profile>   Username, password, TOTP seed (masked input)
+  vpn secrets edit          Edit JSON in \$EDITOR
+  vpn secrets list
+  vpn unlock                  Cache decrypted secrets in keyctl (~${KEYCTL_TTL}s)
+
+Secrets file (encrypted): JSON — username, password (any symbols), totp_secret
+
+Requires: python3, age (or gpg), openvpn
+EOF
+}
+
+expand_path() {
+  local p=$1
+  p=${p//%h/$HOME}
+  [[ $p == ~* ]] && p="${HOME}${p:1}"
+  printf '%s\n' "$p"
+}
+
+trim() {
+  local s=$1
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+declare -A PROFILE_CONFIG PROFILE_USER
+
+load_profiles() {
+  [[ -f $PROFILES_FILE ]] || die "missing $PROFILES_FILE"
+
+  local section=
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    line=$(trim "$line")
+    [[ -z $line ]] && continue
+
+    if [[ $line =~ ^\[([^]]+)\]$ ]]; then
+      section=$(trim "${BASH_REMATCH[1]}")
+      continue
+    fi
+
+    [[ -n $section ]] || continue
+    [[ $line =~ ^([^=]+)=(.*)$ ]] || continue
+
+    local key val
+    key=$(trim "${BASH_REMATCH[1]}")
+    val=$(trim "${BASH_REMATCH[2]}")
+
+    case $key in
+      config) PROFILE_CONFIG[$section]=$(expand_path "$val") ;;
+      username) PROFILE_USER[$section]=$(trim "$val") ;;
+    esac
+  done <"$PROFILES_FILE"
+}
+
+secrets_backend() {
+  if [[ -f ${VPN_SECRETS:-$SECRETS_AGE} ]]; then
+    printf 'age'
+  elif [[ -f $SECRETS_GPG ]]; then
+    printf 'gpg'
+  else
+    die "no secrets file — run: vpn secrets init"
+  fi
+}
+
+secrets_file() {
+  case $(secrets_backend) in
+    age) printf '%s\n' "${VPN_SECRETS:-$SECRETS_AGE}" ;;
+    gpg) printf '%s\n' "$SECRETS_GPG" ;;
+  esac
+}
+
+decrypt_secrets() {
+  local backend file
+  backend=$(secrets_backend)
+  file=$(secrets_file)
+
+  case $backend in
+    age)
+      [[ -f $IDENTITY_AGE ]] || die "missing $IDENTITY_AGE"
+      command -v age >/dev/null 2>&1 || die "install age"
+      age -d -i "$IDENTITY_AGE" "$file"
+      ;;
+    gpg)
+      command -v gpg >/dev/null 2>&1 || die "install gpg"
+      gpg -q -d "$file"
+      ;;
+  esac
+}
+
+encrypt_secrets() {
+  local backend=$1
+  local outfile=$2
+
+  case $backend in
+    age)
+      [[ -f $IDENTITY_AGE ]] || die "missing $IDENTITY_AGE"
+      local pubkey
+      pubkey=$(age-keygen -y "$IDENTITY_AGE")
+      age -r "$pubkey" -o "$outfile"
+      chmod 600 "$outfile"
+      ;;
+    gpg)
+      gpg --symmetric --cipher-algo AES256 -o "$outfile"
+      chmod 600 "$outfile"
+      ;;
+  esac
+}
+
+load_secrets_plain() {
+  if command -v keyctl >/dev/null 2>&1; then
+    local key_id
+    if key_id=$(keyctl request user "$KEYCTL_KEY" 2>/dev/null); then
+      SECRETS_PLAIN=$(keyctl pipe "$key_id")
+    fi
+  fi
+
+  if [[ -z ${SECRETS_PLAIN:-} ]]; then
+    SECRETS_PLAIN=$(decrypt_secrets) || die "could not decrypt secrets (try: vpn unlock)"
+  fi
+}
+
+secrets_py() {
+  command -v python3 >/dev/null 2>&1 || die "python3 required"
+  [[ -f $VPN_SECRETS_PY ]] || die "missing $VPN_SECRETS_PY"
+  printf '%s' "$SECRETS_PLAIN" | python3 "$VPN_SECRETS_PY" "$@"
+}
+
+cache_secrets() {
+  command -v keyctl >/dev/null 2>&1 || die "keyctl not available"
+  local plain key_id
+  plain=$(decrypt_secrets) || die "decrypt failed"
+  keyctl purge user "$KEYCTL_KEY" &>/dev/null || true
+  key_id=$(printf '%s' "$plain" | keyctl padd user "$KEYCTL_KEY" @u)
+  keyctl timeout "$key_id" "$KEYCTL_TTL" 2>/dev/null || true
+  unset plain
+  echo "vpn: secrets cached for ${KEYCTL_TTL}s" >&2
+}
+
+cleanup() {
+  if [[ -n ${AUTH_FILE:-} && -f $AUTH_FILE ]]; then
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "$AUTH_FILE" 2>/dev/null || rm -f "$AUTH_FILE"
+    else
+      rm -f "$AUTH_FILE"
+    fi
+  fi
+  unset AUTH_FILE SECRETS_PLAIN 2>/dev/null || true
+}
+
+trap cleanup EXIT INT TERM
+
+profile_names() {
+  local -a names=()
+  local k
+  for k in "${!PROFILE_CONFIG[@]}"; do
+    names+=("$k")
+  done
+  ((${#names[@]})) || die "no profiles in $PROFILES_FILE"
+  printf '%s\n' "${names[@]}" | LC_ALL=C sort
+}
+
+pick_profile() {
+  local -a names=()
+  mapfile -t names < <(profile_names)
+
+  if ((${#names[@]} == 1)); then
+    printf '%s\n' "${names[0]}"
+    return
+  fi
+
+  if command -v fzf >/dev/null 2>&1; then
+    printf '%s\n' "${names[@]}" | fzf --prompt='VPN profile> ' --height=40%
+    return
+  fi
+
+  if command -v rofi >/dev/null 2>&1; then
+    printf '%s\n' "${names[@]}" | rofi -dmenu -i -p 'VPN profile'
+    return
+  fi
+
+  local i name
+  echo "Select VPN profile:" >&2
+  for i in "${!names[@]}"; do
+    printf '  %d) %s\n' "$((i + 1))" "${names[$i]}" >&2
+  done
+  read -rp 'Number: ' i >&2
+  [[ $i =~ ^[0-9]+$ && $i -ge 1 && $i -le ${#names[@]} ]] || die "invalid selection"
+  printf '%s\n' "${names[$((i - 1))]}"
+}
+
+resolve_profile() {
+  local name=$1
+  [[ -n ${PROFILE_CONFIG[$name]+x} ]] || die "unknown profile: $name"
+  [[ -f ${PROFILE_CONFIG[$name]} ]] || die "missing config: ${PROFILE_CONFIG[$name]}"
+  printf '%s\n' "$name"
+}
+
+secrets_resolve_args() {
+  local name=$1 auth=$2
+  local -a args=(resolve "$name" "$auth")
+  if [[ -n ${PROFILE_USER[$name]:-} ]]; then
+    args+=(--override-user "${PROFILE_USER[$name]}")
+  fi
+  secrets_py "${args[@]}"
+}
+
+secrets_debug_args() {
+  local name=$1 auth=$2
+  local -a args=(debug "$name" --auth-file "$auth")
+  if [[ -n ${PROFILE_USER[$name]:-} ]]; then
+    args+=(--override-user "${PROFILE_USER[$name]}")
+  fi
+  secrets_py "${args[@]}"
+}
+
+build_auth_file() {
+  local name=$1
+
+  AUTH_FILE=$(mktemp -p "$AUTH_DIR" vpn-auth.XXXXXX) \
+    || die "could not create auth file"
+  chmod 600 "$AUTH_FILE"
+
+  load_secrets_plain
+  secrets_resolve_args "$name" "$AUTH_FILE"
+}
+
+cmd_debug() {
+  local name=${1:-}
+  local config
+
+  load_profiles
+  if [[ -z $name ]]; then
+    name=$(pick_profile) || die "no profile selected"
+  fi
+  name=$(resolve_profile "$name")
+  config=${PROFILE_CONFIG[$name]}
+
+  load_secrets_plain
+
+  AUTH_FILE=$(mktemp -p "$AUTH_DIR" vpn-auth.XXXXXX)
+  chmod 600 "$AUTH_FILE"
+
+  secrets_debug_args "$name" "$AUTH_FILE"
+
+  if [[ $EUID -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    if sudo test -r "$AUTH_FILE" 2>/dev/null; then
+      echo '  sudo readable:    yes' >&2
+    else
+      echo '  sudo readable:    NO' >&2
+    fi
+  fi
+
+  printf '  openvpn --config %q --auth-user-pass %q\n' "$config" "$AUTH_FILE" >&2
+}
+
+run_openvpn() {
+  local config=$1
+  local background=${2:-true}
+  local profile_name=${3:-openvpn}
+  local -a cmd=(openvpn --config "$config" --auth-user-pass "$AUTH_FILE")
+
+  if [[ $background == true ]]; then
+    cmd+=(
+      --daemon "vpn-${profile_name}"
+      --log "$VPN_LOG"
+      --writepid "$VPN_PIDFILE"
+    )
+    echo "vpn: starting in background…" >&2
+    if [[ $EUID -ne 0 ]]; then
+      sudo -- "${cmd[@]}"
+    else
+      "${cmd[@]}"
+    fi
+    sleep 2
+    if [[ -n ${AUTH_FILE:-} && -f $AUTH_FILE ]]; then
+      rm -f "$AUTH_FILE"
+      AUTH_FILE=
+    fi
+    cmd_status || true
+    echo "vpn: log → $VPN_LOG" >&2
+    echo "vpn: stop → vpn disconnect" >&2
+    return 0
+  fi
+
+  echo "vpn: foreground mode (Ctrl+C to stop)…" >&2
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo -- openvpn --config "$config" --auth-user-pass "$AUTH_FILE"
+  else
+    exec openvpn --config "$config" --auth-user-pass "$AUTH_FILE"
+  fi
+}
+
+cmd_connect() {
+  local background=true
+  local name=
+  local arg
+
+  while [[ $# -gt 0 ]]; do
+    arg=$1
+    case $arg in
+      -b | --background) background=true; shift ;;
+      -f | --foreground) background=false; shift ;;
+      -*) die "unknown option: $arg" ;;
+      *)
+        name=$arg
+        shift
+        break
+        ;;
+    esac
+  done
+
+  load_profiles
+
+  if [[ -z $name ]]; then
+    name=$(pick_profile) || die "no profile selected"
+  fi
+  name=$(resolve_profile "$name")
+
+  build_auth_file "$name"
+  echo "vpn: connecting to $name…" >&2
+  run_openvpn "${PROFILE_CONFIG[$name]}" "$background" "$name"
+}
+
+cmd_logs() {
+  [[ -f $VPN_LOG ]] || die "no log yet — connect with: vpn connect -b <profile>"
+  tail -f "$VPN_LOG"
+}
+
+cmd_list() {
+  load_profiles
+  profile_names
+}
+
+vpn_tun_iface() {
+  ip -o link show 2>/dev/null | awk -F': ' '
+    $2 ~ /^(tun|tap)[0-9]*$/ && $0 ~ /UP/ { print $2; exit }
+  '
+}
+
+vpn_tun_ip() {
+  local iface=$1
+  [[ -n $iface ]] || return 1
+  ip -4 -o addr show dev "$iface" 2>/dev/null \
+    | awk '{print $4}' | head -1 | cut -d/ -f1
+}
+
+vpn_profile_from_pid() {
+  local pid=$1 args config base
+  args=$(ps -p "$pid" -o args= 2>/dev/null) || return 1
+  config=$(sed -n 's/.*--config[[:space:]]*\([^[:space:]]*\).*/\1/p' <<<"$args")
+  [[ -n $config ]] || return 1
+  base=$(basename "$config" .ovpn)
+  printf '%s' "$base"
+}
+
+cmd_status() {
+  local mode=${1:-}
+  local pid iface ip profile since
+
+  if [[ -f $VPN_PIDFILE ]]; then
+    pid=$(<"$VPN_PIDFILE" 2>/dev/null || true)
+  fi
+  pid=${pid:-$(pgrep -nx openvpn 2>/dev/null || true)}
+  iface=$(vpn_tun_iface || true)
+
+  if [[ -z $pid && -z $iface ]]; then
+    case $mode in
+      --quiet | --symbol) return 1 ;;
+      *) echo "vpn: disconnected"; return 1 ;;
+    esac
+  fi
+
+  ip=$(vpn_tun_ip "$iface" || true)
+  profile=$(vpn_profile_from_pid "$pid" 2>/dev/null || true)
+  since=$(ps -p "$pid" -o lstart= 2>/dev/null | xargs echo 2>/dev/null || true)
+
+  case $mode in
+    --quiet)
+      [[ -n $iface && -n $ip ]] && return 0
+      [[ -n $pid ]] && return 0
+      return 1
+      ;;
+    --symbol)
+      if [[ -n $profile ]]; then
+        printf 'VPN %s' "$profile"
+      else
+        printf 'VPN'
+      fi
+      [[ -n $iface ]] && printf ' (%s' "$iface"
+      [[ -n $ip ]] && printf ' %s' "$ip"
+      [[ -n $iface ]] && printf ')'
+      return 0
+      ;;
+    *)
+      echo "vpn: connected"
+      [[ -n $profile ]] && echo "  profile:   $profile"
+      [[ -n $iface ]] && echo "  interface: $iface"
+      [[ -n $ip ]] && echo "  vpn ip:    $ip"
+      [[ -n $since ]] && echo "  since:     $since"
+      [[ -n $pid ]] && echo "  pid:       $pid"
+      if [[ -z $iface || -z $ip ]]; then
+        echo "  note:      openvpn running; tunnel may still be coming up"
+      fi
+      echo
+      pgrep -a openvpn 2>/dev/null || true
+      return 0
+      ;;
+  esac
+}
+
+cmd_disconnect() {
+  local pid
+
+  if [[ -f $VPN_PIDFILE ]]; then
+    pid=$(<"$VPN_PIDFILE" 2>/dev/null || true)
+  fi
+  pid=${pid:-$(pgrep -nx openvpn 2>/dev/null || true)}
+  if [[ -z $pid ]]; then
+    echo "vpn: not connected"
+    return 0
+  fi
+
+  echo "vpn: disconnecting (pid $pid)…" >&2
+  if [[ $EUID -ne 0 ]]; then
+    sudo kill -TERM "$pid" 2>/dev/null || sudo killall -TERM openvpn
+  else
+    kill -TERM "$pid" 2>/dev/null || killall -TERM openvpn
+  fi
+  sleep 1
+  if pgrep -x openvpn >/dev/null 2>&1; then
+    echo "vpn: force kill…" >&2
+    if [[ $EUID -ne 0 ]]; then
+      sudo kill -KILL "$(pgrep -nx openvpn)" 2>/dev/null || true
+    else
+      kill -KILL "$(pgrep -nx openvpn)" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$VPN_PIDFILE"
+  cmd_status || true
+}
+
+cmd_unlock() {
+  cache_secrets
+}
+
+cmd_secrets_init() {
+  mkdir -p "$OPENVPN_DIR"
+  chmod 700 "$OPENVPN_DIR"
+
+  if command -v age-keygen >/dev/null 2>&1 && command -v age >/dev/null 2>&1; then
+    if [[ ! -f $IDENTITY_AGE ]]; then
+      echo "vpn: creating age identity at $IDENTITY_AGE" >&2
+      age-keygen -o "$IDENTITY_AGE"
+      chmod 600 "$IDENTITY_AGE"
+    fi
+    printf '{}\n' | encrypt_secrets age "$SECRETS_AGE"
+    echo "vpn: created $SECRETS_AGE (JSON)" >&2
+  else
+    command -v gpg >/dev/null 2>&1 || die "install age or gpg"
+    printf '{}\n' | encrypt_secrets gpg "$SECRETS_GPG"
+    echo "vpn: created $SECRETS_GPG (JSON)" >&2
+  fi
+  echo "vpn: next → vpn secrets set <profile>" >&2
+}
+
+cmd_secrets_set() {
+  local profile=${1:-}
+  [[ -n $profile ]] || die "usage: vpn secrets set <profile>"
+
+  load_profiles
+  resolve_profile "$profile" >/dev/null
+
+  local username totp backend outfile pass_file current
+
+  read -rp 'username: ' username
+  [[ -n $username ]] || die "username is required"
+
+  pass_file=$(mktemp -p "$AUTH_DIR" vpn-pass.XXXXXX)
+  chmod 600 "$pass_file"
+  read -rsp 'password: ' _pw
+  echo >&2
+  printf '%s' "$_pw" >"$pass_file"
+  unset _pw
+
+  read -rsp 'totp_secret (base32): ' totp
+  echo >&2
+  [[ -n $totp ]] || die "totp_secret required"
+
+  backend=$(secrets_backend) 2>/dev/null || backend=age
+  outfile=$(secrets_file) 2>/dev/null || outfile=$SECRETS_AGE
+
+  current=$'{}'
+  if [[ -f $outfile ]]; then
+    current=$(decrypt_secrets) || die "decrypt failed"
+  fi
+
+  mkdir -p "$OPENVPN_DIR"
+  SECRETS_PLAIN=$current
+  SECRETS_PLAIN=$(secrets_py merge "$profile" --username "$username" \
+    --password-file "$pass_file" --totp-secret "$totp") \
+    || die "failed to update secrets"
+
+  printf '%s' "$SECRETS_PLAIN" | encrypt_secrets "$backend" "$outfile"
+
+  shred -u "$pass_file" 2>/dev/null || rm -f "$pass_file"
+  unset totp SECRETS_PLAIN
+  keyctl purge user "$KEYCTL_KEY" &>/dev/null || true
+  echo "vpn: saved encrypted credentials for $profile (JSON)" >&2
+}
+
+cmd_secrets_edit() {
+  local profile=${1:-}
+  local backend outfile tmp
+
+  backend=$(secrets_backend)
+  outfile=$(secrets_file)
+  [[ -f $outfile ]] || die "run: vpn secrets init"
+
+  tmp=$(mktemp -p "$AUTH_DIR" vpn-secrets-edit.XXXXXX)
+  chmod 600 "$tmp"
+
+  SECRETS_PLAIN=$(decrypt_secrets) || die "decrypt failed"
+  SECRETS_PLAIN=$(printf '%s' "$SECRETS_PLAIN" | python3 "$VPN_SECRETS_PY" format)
+  printf '%s' "$SECRETS_PLAIN" >"$tmp"
+  unset SECRETS_PLAIN
+
+  "${EDITOR:-vi}" "$tmp"
+
+  if [[ -n $profile ]]; then
+    grep -q "\"${profile}\"" "$tmp" || die "profile \"$profile\" not found in edited JSON"
+  fi
+
+  python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$tmp" \
+    || die "invalid JSON after edit"
+
+  encrypt_secrets "$backend" "$outfile" <"$tmp"
+  shred -u "$tmp" 2>/dev/null || rm -f "$tmp"
+  keyctl purge user "$KEYCTL_KEY" &>/dev/null || true
+  echo "vpn: secrets re-encrypted (JSON)" >&2
+}
+
+cmd_secrets_list() {
+  load_secrets_plain
+  secrets_py list
+}
+
+main() {
+  case ${1:-} in
+    -h | --help | help) usage ;;
+    -V | --version) printf 'vpn %s\n' "$VERSION" ;;
+    list) cmd_list ;;
+    status) shift; cmd_status "${1:-}" ;;
+    disconnect) cmd_disconnect ;;
+    unlock) cmd_unlock ;;
+    debug) shift; cmd_debug "${1:-}" ;;
+    connect) shift; cmd_connect "$@" ;;
+    logs) cmd_logs ;;
+    secrets)
+      shift
+      case ${1:-} in
+        init) cmd_secrets_init ;;
+        set) shift; cmd_secrets_set "${1:-}" ;;
+        edit) shift; cmd_secrets_edit "${1:-}" ;;
+        list) cmd_secrets_list ;;
+        *) die "usage: vpn secrets {init|set|edit|list}" ;;
+      esac
+      ;;
+    '') cmd_connect "" ;;
+    *)
+      if [[ -n ${1:-} && -z ${2:-} ]]; then
+        cmd_connect "$1"
+      else
+        usage >&2
+        exit 2
+      fi
+      ;;
+  esac
+}
+
+main "$@"

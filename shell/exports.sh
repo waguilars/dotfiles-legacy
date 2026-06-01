@@ -20,6 +20,7 @@ export BUN_INSTALL="$HOME/.bun"
 export AQUA_ROOT_DIR="$HOME/.local/share/aquaproj-aqua"
 export AQUA_GLOBAL_CONFIG="$HOME/.dotfiles/aqua.yaml"
 export PNPM_HOME="$HOME/.local/share/pnpm"
+export STARSHIP_CONFIG="${DOTFILES_PATH}/shell/config/starship.toml"
 export FZF_DEFAULT_OPTS="
 --no-sort
 --reverse
