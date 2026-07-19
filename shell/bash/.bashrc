@@ -48,3 +48,5 @@ if [ -n "$(ls -A "$DOTFILES_PATH/shell/bash/completions/")" ]; then
     source "$bash_file"
   done
 fi
+export QML2_IMPORT_PATH="$HOME/.local/lib/qt6/qml"
+export CAELESTIA_LIB_DIR="$HOME/.local/lib/caelestia"
