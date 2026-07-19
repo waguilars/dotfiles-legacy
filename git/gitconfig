@@ -1,6 +1,6 @@
 [user]
 	name = Wilson Aguilar
-	email = 52500170+waguilars@users.noreply.github.com
+	email = waguilar@montran.com
 
 [include]
 	path = $HOME/.dotfiles/git/gitconfig.local
@@ -32,6 +32,6 @@
 	conflictStyle = zdiff3
 
 [alias]
-	work = !git config -f "$HOME/.dotfiles/git/gitconfig.local" user.email "$(git config --get author.work)"
-	personal = !git config -f "$HOME/.dotfiles/git/gitconfig.local" user.email "$(git config --get author.personal)"
+	work = !git config --global user.email "$(git config -f "$HOME/.dotfiles/git/gitconfig.local" --get author.work)"
+	personal = !git config --global user.email "$(git config -f "$HOME/.dotfiles/git/gitconfig.local" --get author.personal)"
 	clean-branches = !~/.dotfiles/bin/git-clean-branches
