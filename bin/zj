@@ -1,0 +1,685 @@
+#!/usr/bin/env bash
+# Zellij session helper.
+#
+# Non-project flows (preserved from previous version):
+#   zj                       Attach/create the default session (no custom layout)
+#   zj <name>                Attach/create a named session with the "work" layout
+#   zj -l, --list            Pick an active session with fzf and attach
+#   zj -h, --help            Show this help
+#
+# Project-aware flows (new):
+#   zj --project <alias>                       Open project <alias>; session name = alias
+#   zj -p <alias> [--log <name>]               Short form; optionally filter to a single log pane
+#   zj -p <alias> [<session>]                  Override the session name for the project
+#   zj --list-projects                         List projects defined in the YAML config
+#   zj --config <path>                         Use a custom YAML config file
+#
+# Project mode reads /home/waguilar/.config/zellij/projects.yaml (overridable
+# with --config) and generates a --layout-string at runtime so the static
+# work.kdl layout is not modified. The Logs tab is built DYNAMICALLY from
+# every entry under `projects[].logs`: each entry becomes its own pane
+# running `tail -F` on the resolved log file, with the entry's `name` used
+# as the pane title. Use `--log <name>` to filter the Logs tab down to a
+# single pane; omit it to show every configured log.
+
+set -euo pipefail
+
+readonly DEFAULT_SESSION="default"
+readonly WORK_LAYOUT="work"
+readonly DEFAULT_PROJECTS_CONFIG="$HOME/.config/zellij/projects.yaml"
+
+die() {
+  printf 'zj: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  zj                              Attach/create session "$DEFAULT_SESSION" (no custom layout)
+  zj <name>                       Attach/create session <name> with layout "$WORK_LAYOUT"
+  zj -l, --list                   Pick an active session with fzf and attach
+  zj -h, --help                   Show this help
+
+Project mode (reads YAML config, generates layout dynamically):
+  zj -p, --project <alias>        Open project <alias> (session name = alias)
+  zj -p <alias> [--log <name>]    Filter Logs tab to a single log entry (default: show all)
+  zj -p <alias> [<session>]       Override the default session name
+  zj --config <path>              Use a custom YAML config file
+  zj --list-projects              List projects defined in the YAML config
+
+Config file: $DEFAULT_PROJECTS_CONFIG
+EOF
+}
+
+already_in_session() {
+  local target="$1"
+  local current="${ZELLIJ_SESSION_NAME:-}"
+  if [[ "$current" == "$target" ]]; then
+    printf 'Already inside Zellij session: %s\n' "$target"
+    exit 0
+  fi
+}
+
+attach_default() {
+  already_in_session "$DEFAULT_SESSION"
+  exec zellij attach -c "$DEFAULT_SESSION"
+}
+
+attach_work() {
+  local session="$1"
+  already_in_session "$session"
+  exec zellij --layout "$WORK_LAYOUT" attach -c "$session"
+}
+
+pick_session_fzf() {
+  command -v fzf >/dev/null 2>&1 || die "fzf is required for -l/--list"
+
+  local -a sessions=()
+  mapfile -t sessions < <(zellij list-sessions -s 2>/dev/null || true)
+
+  if ((${#sessions[@]} == 0)); then
+    die "no active sessions (start one with: zj or zj <name>)"
+  fi
+
+  local selected="${sessions[0]}"
+  if ((${#sessions[@]} > 1)); then
+    selected="$(
+      printf '%s\n' "${sessions[@]}" | fzf \
+        --prompt='zellij session> ' \
+        --height=40% \
+        --layout=reverse \
+        --border
+    )" || exit 130
+    [[ -n "$selected" ]] || exit 130
+  fi
+
+  already_in_session "$selected"
+  exec zellij attach "$selected"
+}
+
+# ---------------------------------------------------------------------------
+# Project mode
+# ---------------------------------------------------------------------------
+#
+# The Python helper reads the YAML config, finds the requested project, and
+# emits a JSON envelope with everything the shell needs to build a layout:
+#   {"ok": true, "root": "...", "log_dir": "...", "log_file": "...", "alias": "..."}
+# or
+#   {"ok": false, "error": "..."}
+#
+# We use Python (PyYAML) because `yq` is not guaranteed to be installed.
+
+project_resolve() {
+  local config_path="$1"
+  local alias="$2"
+  local log_name="$3"
+
+  [[ -f "$config_path" ]] || die "config not found: $config_path"
+
+  PROJECT_CONFIG="$config_path" PROJECT_ALIAS="$alias" PROJECT_LOG="$log_name" \
+    python3 - <<'PY'
+import json
+import os
+import sys
+
+# All failure paths must print a JSON envelope {"ok": False, "error": "..."}
+# and exit 0, so the surrounding bash script can route them through `die`.
+# We never raise from this heredoc -- any unhandled traceback would bypass
+# `set -euo pipefail` handling in the shell.
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg}))
+    sys.exit(0)
+
+try:
+    import yaml
+except ImportError:
+    fail("PyYAML is required (install with: pip install --user PyYAML)")
+
+# Reject control characters and newlines in any value that is later
+# interpolated into a KDL layout string. Without this check, a YAML
+# entry like `file: "out.log\npane name=\"x\""` would inject arbitrary
+# KDL tokens into the generated layout.
+_CONTROL_CHARS = set(chr(c) for c in range(0x20) if c not in (0x09,)) | {"\x7f"}
+
+def _has_invalid_chars(s):
+    return any(ch in _CONTROL_CHARS or ch in ("\n", "\r") for ch in s)
+
+def check_path_value(field, value, where):
+    if not isinstance(value, str) or not value:
+        fail(f"{where}: `{field}` must be a non-empty string")
+    if _has_invalid_chars(value):
+        fail(
+            f"{where}: `{field}` contains control characters or newlines "
+            f"(path values must be single-line, ASCII-printable paths)"
+        )
+
+config_path = os.environ["PROJECT_CONFIG"]
+alias = os.environ["PROJECT_ALIAS"]
+# `--log` is now an optional FILTER (not a default-to-"default" selector).
+# An empty PROJECT_LOG means "show every configured log as a pane".
+log_name = os.environ.get("PROJECT_LOG", "").strip()
+
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+except yaml.YAMLError as exc:
+    fail(f"invalid YAML: {exc}")
+except OSError as exc:
+    fail(f"cannot read config: {exc}")
+
+if not isinstance(data, dict):
+    fail("config root must be a mapping")
+
+servers = data.get("servers") or []
+projects = data.get("projects") or []
+
+if not isinstance(servers, list) or not isinstance(projects, list):
+    fail("`servers` and `projects` must be lists")
+
+servers_by_name = {}
+for idx, srv in enumerate(servers):
+    if not isinstance(srv, dict):
+        fail(f"servers[{idx}] must be a mapping")
+    name = srv.get("name")
+    base_dir = srv.get("base_dir")
+    if not name or not base_dir:
+        fail(f"servers[{idx}] needs `name` and `base_dir`")
+    if name in servers_by_name:
+        fail(
+            f"duplicate server name {name!r} "
+            f"(servers[{idx}] collides with an earlier entry)"
+        )
+    check_path_value("base_dir", base_dir, f"servers[{idx}]")
+    servers_by_name[name] = srv
+
+project = None
+seen_aliases = set()
+for idx, proj in enumerate(projects):
+    if not isinstance(proj, dict):
+        fail(f"projects[{idx}] must be a mapping")
+    proj_alias = proj.get("alias")
+    if not proj_alias:
+      fail(f"projects[{idx}] needs `alias`")
+    if not isinstance(proj_alias, str):
+      # A non-string alias (bool/int/list/dict) would either crash when
+      # `seen_aliases.add(proj_alias)` is called (unhashable) or silently
+      # never match any `--project <alias>` value passed by the user.
+      # Reject it up front with a single-line error envelope.
+      fail(f"projects[{idx}].`alias` must be a string")
+    if proj_alias in seen_aliases:
+        fail(
+            f"duplicate project alias {proj_alias!r} "
+            f"(projects[{idx}] collides with an earlier entry)"
+        )
+    seen_aliases.add(proj_alias)
+    # Pre-validate path-shaped fields up front so a malformed project is
+    # rejected before we waste time walking logs.
+    check_path_value("root", proj.get("root"), f"projects[{idx}]")
+    if proj_alias == alias:
+        project = proj
+
+if project is None:
+    available = sorted(seen_aliases)
+    msg = f"project not found: {alias!r}"
+    if available:
+        msg += f" (available: {', '.join(available)})"
+    fail(msg)
+
+root = project.get("root")
+if not root:
+    fail(f"project {alias!r} is missing `root`")
+
+logs = project.get("logs") or []
+if not isinstance(logs, list) or not logs:
+    fail(f"project {alias!r} has no `logs` entries")
+
+# First pass: validate every log entry (type, name, uniqueness, required
+# path fields). We resolve path components in a second pass so any error
+# message that names a field/entry stays anchored at the offending index.
+seen_log_names = set()
+resolved = []
+for idx, entry in enumerate(logs):
+    if not isinstance(entry, dict):
+        fail(f"project {alias!r}: logs[{idx}] must be a mapping")
+    entry_name = entry.get("name")
+    if not entry_name:
+        fail(f"project {alias!r}: logs[{idx}] needs `name`")
+    if not isinstance(entry_name, str):
+        # Same rationale as `projects[].alias`: a non-string log name is
+        # either unhashable (list/dict) or silently never matches the
+        # `--log` argument the user passed.
+        fail(f"project {alias!r}: logs[{idx}].`name` must be a string")
+    if entry_name in seen_log_names:
+        fail(
+            f"project {alias!r}: duplicate log entry name {entry_name!r} "
+            f"(logs[{idx}] collides with an earlier entry)"
+        )
+    seen_log_names.add(entry_name)
+
+    server_name = entry.get("server")
+    profile = entry.get("profile")
+    subpath = entry.get("subpath") or ""
+    file_name = entry.get("file")
+
+    if not server_name or not profile or not file_name:
+        fail(
+            f"project {alias!r}: logs[{idx}] (name={entry_name!r}) "
+            f"needs `server`, `profile`, and `file`"
+        )
+    if not isinstance(server_name, str) or not isinstance(profile, str) \
+            or not isinstance(file_name, str):
+        fail(
+            f"project {alias!r}: logs[{idx}] (name={entry_name!r}) "
+            f"has a non-string `server`/`profile`/`file`"
+        )
+
+    log_where = f"project {alias!r}: logs[{idx}] (name={entry_name!r})"
+    check_path_value("profile", profile, log_where)
+    if subpath:
+        check_path_value("subpath", subpath, log_where)
+    check_path_value("file", file_name, log_where)
+
+    server = servers_by_name.get(server_name)
+    if server is None:
+        fail(
+            f"project {alias!r}: logs[{idx}] (name={entry_name!r}) "
+            f"references unknown server: {server_name!r}"
+        )
+    base_dir = server.get("base_dir")
+
+    # Path rule: {base_dir}/{profile}/{subpath}/{file}
+    parts = [base_dir, profile]
+    if subpath:
+        parts.append(subpath)
+    parts.append(file_name)
+    log_file = os.path.join(*parts)
+    log_dir = os.path.dirname(log_file)
+    resolved.append({
+        "name": entry_name,
+        "log_dir": log_dir,
+        "log_file": log_file,
+        "server_name": server_name,
+        "profile": profile,
+    })
+
+# Apply the optional `--log <name>` filter. When set, the Logs tab will
+# show only the matching entry; otherwise it shows every configured log.
+selected_logs = resolved
+selected_log_name = ""
+if log_name:
+    matched = [e for e in resolved if e["name"] == log_name]
+    if not matched:
+        available_logs = sorted(e["name"] for e in resolved)
+        msg = f"log entry not found: {log_name!r}"
+        if available_logs:
+            msg += f" (available: {', '.join(available_logs)})"
+        fail(msg)
+    selected_logs = matched
+    selected_log_name = log_name
+
+print(json.dumps({
+    "ok": True,
+    "alias": alias,
+    "root": root,
+    "logs": selected_logs,
+    "log_filter": selected_log_name,
+}))
+PY
+}
+
+# Build a KDL layout string with the project's root as the cwd for Work/Code
+# and a `tail -F` command in the Logs tab. The KDL escapes are minimal: we
+# only need to escape backslashes and double quotes inside string literals.
+kdl_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+# Build the Logs tab fragment. Each log entry becomes its own pane running
+# `tail -F` on the resolved file, with the entry's `name` used as the pane
+# title so the user can tell WAS profiles apart at a glance.
+build_logs_tab() {
+  local root_esc="$1"
+  shift
+  local -a entries=("$@")
+
+  printf '    tab name="Logs" cwd="%s" {\n' "$root_esc"
+  printf '        pane split_direction="vertical" {\n'
+
+  local entry
+  for entry in "${entries[@]}"; do
+    # entry is a pipe-delimited triple: name|log_dir|log_file
+    local name log_dir log_file name_esc log_dir_esc log_file_esc
+    name="${entry%%|*}"
+    local rest="${entry#*|}"
+    log_dir="${rest%%|*}"
+    log_file="${rest#*|}"
+    name_esc="$(kdl_escape "$name")"
+    log_dir_esc="$(kdl_escape "$log_dir")"
+    log_file_esc="$(kdl_escape "$log_file")"
+    printf '            pane name="%s" cwd="%s" command="tail" {\n' \
+      "$name_esc" "$log_dir_esc"
+    printf '                args "-F" "%s"\n' "$log_file_esc"
+    printf '            }\n'
+  done
+
+  printf '        }\n'
+  printf '    }\n'
+}
+
+project_build_layout() {
+  local root="$1"
+  shift
+  # Remaining args: pipe-delimited log entries (name|log_dir|log_file).
+  local -a log_entries=("$@")
+
+  local root_esc
+  root_esc="$(kdl_escape "$root")"
+
+  cat <<KDL
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="tab-bar"
+        }
+        children
+        pane size=1 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    tab name="Work" cwd="${root_esc}" {
+        pane
+    }
+
+    tab name="Code" cwd="${root_esc}" {
+        pane
+    }
+
+KDL
+
+  build_logs_tab "$root_esc" "${log_entries[@]}"
+
+  cat <<'KDL'
+}
+KDL
+}
+
+project_list() {
+  local config_path="$1"
+  [[ -f "$config_path" ]] || die "config not found: $config_path"
+
+  PROJECT_CONFIG="$config_path" python3 - <<'PY'
+import os
+import sys
+
+# Consistent error contract: every failure path here prints a single
+# "zj: <message>" line to stderr and exits non-zero, matching the
+# shell-side `die()` helper. We never let an unhandled exception
+# leak through, because `set -euo pipefail` would otherwise abort
+# the script with a raw traceback.
+
+try:
+    import yaml
+except ImportError:
+    print("zj: PyYAML is required (install with: pip install --user PyYAML)", file=sys.stderr)
+    sys.exit(1)
+
+config_path = os.environ["PROJECT_CONFIG"]
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+except yaml.YAMLError as exc:
+    print(f"zj: invalid YAML: {exc}", file=sys.stderr)
+    sys.exit(1)
+except OSError as exc:
+    print(f"zj: cannot read config: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+if not isinstance(data, dict):
+    print("zj: config root must be a mapping", file=sys.stderr)
+    sys.exit(1)
+
+# Two-pass validation: first pass walks the whole config and reports
+# every problem, then exits. Only after all checks pass do we print the
+# project list. This keeps stdout clean for the success path and
+# makes duplicate/uniqueness errors the only thing the user sees.
+
+servers = data.get("servers") or []
+if not isinstance(servers, list):
+    print("zj: `servers` must be a list", file=sys.stderr)
+    sys.exit(1)
+
+seen_server_names = set()
+for idx, srv in enumerate(servers):
+    if not isinstance(srv, dict):
+        print(f"zj: servers[{idx}] must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    name = srv.get("name")
+    if not name:
+        print(f"zj: servers[{idx}] needs `name`", file=sys.stderr)
+        sys.exit(1)
+    if name in seen_server_names:
+        print(
+            f"zj: duplicate server name {name!r} "
+            f"(servers[{idx}] collides with an earlier entry)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    seen_server_names.add(name)
+    base_dir = srv.get("base_dir")
+    if base_dir is not None and not isinstance(base_dir, str):
+        print(f"zj: servers[{idx}].base_dir must be a string", file=sys.stderr)
+        sys.exit(1)
+
+projects = data.get("projects") or []
+if not isinstance(projects, list):
+    print("zj: `projects` must be a list", file=sys.stderr)
+    sys.exit(1)
+
+seen_aliases = set()
+for idx, proj in enumerate(projects):
+    if not isinstance(proj, dict):
+        print(f"zj: projects[{idx}] must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    alias = proj.get("alias")
+    if not alias:
+      print(f"zj: projects[{idx}] needs `alias`", file=sys.stderr)
+      sys.exit(1)
+    if not isinstance(alias, str):
+      # Same rationale as in the resolve path: a non-string alias would
+      # crash the set-add below, so reject it explicitly here too.
+      print(f"zj: projects[{idx}].`alias` must be a string", file=sys.stderr)
+      sys.exit(1)
+    if alias in seen_aliases:
+        print(
+            f"zj: duplicate project alias {alias!r} "
+            f"(projects[{idx}] collides with an earlier entry)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    seen_aliases.add(alias)
+    root = proj.get("root")
+    if root is not None and not isinstance(root, str):
+        print(f"zj: projects[{idx}].root must be a string", file=sys.stderr)
+        sys.exit(1)
+
+# All checks passed: emit the listing.
+for proj in projects:
+    alias = proj["alias"]
+    root = proj.get("root")
+    print(f"{alias}\t{root or '(no root)'}")
+PY
+}
+
+attach_project() {
+  local config_path="$1"
+  local alias="$2"
+  local log_name="$3"
+  local session="$4"
+
+  local envelope
+  envelope="$(project_resolve "$config_path" "$alias" "$log_name")"
+
+  local ok
+  ok="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("ok"))')"
+  if [[ "$ok" != "True" ]]; then
+    local err
+    err="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("error", "unknown error"))')"
+    die "$err"
+  fi
+
+  local root
+  root="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["root"])')"
+  local resolved_log_filter
+  resolved_log_filter="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["log_filter"])')"
+
+  # Decode the per-pane log entries into a bash array of
+  # `name|log_dir|log_file` triples. We use a python helper to avoid
+  # re-implementing JSON parsing in pure bash (which would require its own
+  # validation/error handling under set -e).
+  local -a log_entries=()
+  while IFS= read -r triple; do
+    [[ -n "$triple" ]] || continue
+    log_entries+=("$triple")
+  done < <(printf '%s' "$envelope" | python3 -c '
+import json, sys
+data = json.loads(sys.stdin.read())
+for entry in data.get("logs", []):
+    print("{}|{}|{}".format(entry["name"], entry["log_dir"], entry["log_file"]))
+')
+
+  if [[ ! -d "$root" ]]; then
+    die "project root does not exist: $root"
+  fi
+
+  # Per-pane path warnings. `tail -F` happily waits for the file to appear,
+  # so these are non-fatal -- the user just gets a heads-up.
+  local entry
+  for entry in "${log_entries[@]}"; do
+    local ename elog_dir elog_file
+    ename="${entry%%|*}"
+    local rest="${entry#*|}"
+    elog_dir="${rest%%|*}"
+    elog_file="${rest#*|}"
+    if [[ ! -d "$elog_dir" ]]; then
+      printf 'zj: warning: log directory for %s does not exist yet: %s\n' \
+        "$ename" "$elog_dir" >&2
+    fi
+    if [[ ! -f "$elog_file" ]]; then
+      printf 'zj: warning: log file for %s does not exist yet (tail -F will follow): %s\n' \
+        "$ename" "$elog_file" >&2
+    fi
+  done
+
+  already_in_session "$session"
+  if [[ -n "$resolved_log_filter" ]]; then
+    printf 'zj: opening project %s (root=%s, log filter=%s, %d pane(s))\n' \
+      "$alias" "$root" "$resolved_log_filter" "${#log_entries[@]}" >&2
+  else
+    printf 'zj: opening project %s (root=%s, %d log pane(s))\n' \
+      "$alias" "$root" "${#log_entries[@]}" >&2
+  fi
+
+  local layout_string
+  layout_string="$(project_build_layout "$root" "${log_entries[@]}")"
+
+  exec zellij --layout-string "$layout_string" attach -c "$session"
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+main() {
+  local project=""
+  local log_name=""
+  local config_path="$DEFAULT_PROJECTS_CONFIG"
+  local positional=()
+  local list_projects=0
+
+  while (($# > 0)); do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      -l|--list|list)
+        pick_session_fzf
+        exit 0
+        ;;
+      -p|--project)
+        [[ $# -ge 2 ]] || die "--project requires an alias"
+        project="$2"
+        shift 2
+        ;;
+      --project=*)
+        project="${1#--project=}"
+        shift
+        ;;
+      --log)
+        [[ $# -ge 2 ]] || die "--log requires a name"
+        log_name="$2"
+        shift 2
+        ;;
+      --log=*)
+        log_name="${1#--log=}"
+        shift
+        ;;
+      --config)
+        [[ $# -ge 2 ]] || die "--config requires a path"
+        config_path="$2"
+        shift 2
+        ;;
+      --config=*)
+        config_path="${1#--config=}"
+        shift
+        ;;
+      --list-projects)
+        list_projects=1
+        shift
+        ;;
+      --)
+        shift
+        while (($# > 0)); do
+          positional+=("$1")
+          shift
+        done
+        ;;
+      -*)
+        die "unknown option: $1 (try: zj --help)"
+        ;;
+      *)
+        positional+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ((list_projects)); then
+    project_list "$config_path"
+    exit 0
+  fi
+
+  if [[ -n "$project" ]]; then
+    local session="${positional[0]:-$project}"
+    if ((${#positional[@]} > 1)); then
+      die "too many positional arguments in project mode (got: ${positional[*]})"
+    fi
+    attach_project "$config_path" "$project" "$log_name" "$session"
+    exit 0
+  fi
+
+  # Non-project flows (unchanged behavior)
+  case "${#positional[@]}" in
+    0) attach_default ;;
+    1) attach_work "${positional[0]}" ;;
+    *) die "too many positional arguments (got: ${positional[*]})" ;;
+  esac
+}
+
+main "$@"
