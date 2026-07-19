@@ -1,4 +1,7 @@
 git/gitconfig.local
+.atl/
+bin/work/*
+!bin/work/.gitkeep
 
 # Python
 __pycache__/

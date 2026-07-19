@@ -17,6 +17,7 @@ export BUN_INSTALL="$HOME/.bun"
 # ------------------------------------------------------------------------------
 # Custom Exports
 # ------------------------------------------------------------------------------
+export IDEA_INSTALL_DIR="$HOME/.local/share/JetBrains/Toolbox/apps/intellij-idea"
 export AQUA_ROOT_DIR="$HOME/.local/share/aquaproj-aqua"
 export AQUA_GLOBAL_CONFIG="$HOME/.dotfiles/aqua.yaml"
 export PNPM_HOME="$HOME/.local/share/pnpm"
@@ -41,6 +42,8 @@ export FZF_DEFAULT_OPTS="
 # Path - The higher it is, the more priority it has
 # ------------------------------------------------------------------------------
 export path=(
+  "$DOTFILES_PATH/bin/work"
+  "$IDEA_INSTALL_DIR/bin"
   "$HOME/.opencode/bin"
   "$PNPM_HOME/bin"
   "$HOME/bin"
