@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+# Mount Synology NAS via rclone (WebDAV/SFTP remote).
+set -euo pipefail
+
+readonly VERSION=1.0.0
+readonly RCLONE_REMOTE="${NAS_REMOTE:-will-drive@HomeServer:home}"
+readonly MOUNT_POINT="${NAS_MOUNT_POINT:-$HOME/CloudDrives/SynologyDrive}"
+readonly CACHE_DIR="${NAS_CACHE_DIR:-$HOME/.cache/rclone}"
+readonly PIDFILE="${NAS_PIDFILE:-$CACHE_DIR/mount-synology.pid}"
+readonly LOG_FILE="${NAS_LOG_FILE:-$CACHE_DIR/mount-synology.log}"
+
+die() {
+  echo "nas: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+nas $VERSION — rclone mount for Synology NAS
+
+Usage:
+  nas                  Mount in background (daemon)
+  nas mount [-f]       Mount (-f = foreground, for debugging)
+  nas status           Show mount state
+  nas umount           Unmount the drive
+
+Environment:
+  NAS_REMOTE           rclone remote path (default: will-drive@HomeServer:home)
+  NAS_MOUNT_POINT      local mount point (default: ~/CloudDrives/SynologyDrive)
+  NAS_CACHE_DIR        rclone cache directory (default: ~/.cache/rclone)
+  NAS_PIDFILE          pid file for daemon mount
+  NAS_LOG_FILE         log file for daemon mount
+
+Requires: rclone, fusermount
+EOF
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+fusermount_cmd() {
+  if command -v fusermount3 >/dev/null 2>&1; then
+    printf 'fusermount3\n'
+  elif command -v fusermount >/dev/null 2>&1; then
+    printf 'fusermount\n'
+  else
+    die "missing fusermount (install fuse)"
+  fi
+}
+
+mount_state() {
+  local out
+  out=$(mountpoint "$MOUNT_POINT" 2>&1) || {
+    case $out in
+      *"is a mountpoint"*) printf 'mounted\n' ;;
+      *"Transport endpoint is not connected"*) printf 'stale\n' ;;
+      *) printf 'unmounted\n' ;;
+    esac
+    return
+  }
+  printf 'mounted\n'
+}
+
+is_mounted() {
+  [[ $(mount_state) == mounted ]]
+}
+
+is_stale_mount() {
+  [[ $(mount_state) == stale ]]
+}
+
+cleanup_stale_mount() {
+  local fuser
+  fuser=$(fusermount_cmd)
+  echo "nas: cleaning stale mount at $MOUNT_POINT…" >&2
+  "$fuser" -uz "$MOUNT_POINT" || die "could not clean stale mount at $MOUNT_POINT"
+  sleep 1
+  is_stale_mount && die "stale mount still present at $MOUNT_POINT"
+}
+
+rclone_pid() {
+  pgrep -f "rclone mount .*${MOUNT_POINT}( |$)" 2>/dev/null | head -1
+}
+
+ensure_dirs() {
+  mkdir -p "$CACHE_DIR" "$(dirname "$MOUNT_POINT")"
+}
+
+rclone_mount_args() {
+  printf '%s\n' \
+    "$RCLONE_REMOTE" \
+    "$MOUNT_POINT" \
+    --vfs-cache-mode full \
+    --vfs-cache-max-age 72h \
+    --vfs-cache-max-size 20G \
+    --cache-dir "$CACHE_DIR" \
+    --dir-cache-time 10m \
+    --buffer-size 64M \
+    --vfs-read-chunk-size 64M \
+    --vfs-read-chunk-size-limit off \
+    --attr-timeout 1s
+}
+
+cmd_mount() {
+  local foreground=false
+
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -f | --foreground) foreground=true; shift ;;
+      -h | --help) usage; return 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  require_cmd rclone
+  fusermount_cmd >/dev/null
+  ensure_dirs
+
+  if is_stale_mount; then
+    cleanup_stale_mount
+  elif is_mounted; then
+    echo "nas: already mounted at $MOUNT_POINT" >&2
+    cmd_status
+    return 0
+  fi
+
+  mkdir -p "$MOUNT_POINT"
+
+  local -a args=()
+  mapfile -t args < <(rclone_mount_args)
+
+  if [[ $foreground == true ]]; then
+    echo "nas: mounting $RCLONE_REMOTE → $MOUNT_POINT (foreground, Ctrl+C to stop)…" >&2
+    exec rclone mount "${args[@]}"
+  fi
+
+  echo "nas: mounting $RCLONE_REMOTE → $MOUNT_POINT…" >&2
+  rclone mount "${args[@]}" \
+    --daemon \
+    --log-file "$LOG_FILE" \
+    --log-format "date,time,pid"
+
+  sleep 1
+  if is_mounted; then
+    local pid
+    pid=$(rclone_pid || true)
+    [[ -n $pid ]] && printf '%s\n' "$pid" >"$PIDFILE"
+    echo "nas: mounted at $MOUNT_POINT" >&2
+    [[ -n $pid ]] && echo "nas: pid $pid" >&2
+    echo "nas: log → $LOG_FILE" >&2
+    return 0
+  fi
+
+  die "mount failed — check $LOG_FILE"
+}
+
+cmd_umount() {
+  local lazy=false
+  local fuser
+  fuser=$(fusermount_cmd)
+
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -l | --lazy) lazy=true; shift ;;
+      -h | --help) usage; return 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  if is_stale_mount; then
+    cleanup_stale_mount
+    rm -f "$PIDFILE"
+    echo "nas: stale mount cleaned" >&2
+    return 0
+  fi
+
+  if ! is_mounted; then
+    echo "nas: not mounted at $MOUNT_POINT" >&2
+    rm -f "$PIDFILE"
+    return 0
+  fi
+
+  echo "nas: unmounting $MOUNT_POINT…" >&2
+  if [[ $lazy == true ]]; then
+    "$fuser" -uz "$MOUNT_POINT"
+  else
+    "$fuser" -u "$MOUNT_POINT"
+  fi
+
+  sleep 1
+  if is_mounted; then
+    die "unmount failed — files may still be in use (try: nas umount --lazy)"
+  fi
+
+  rm -f "$PIDFILE"
+  echo "nas: unmounted" >&2
+}
+
+cmd_status() {
+  local mode=${1:-}
+  local pid iface
+
+  if is_stale_mount; then
+    case $mode in
+      --quiet | --symbol) return 1 ;;
+      *)
+        echo "nas: stale mount (transport endpoint not connected)"
+        echo "  remote:  $RCLONE_REMOTE"
+        echo "  path:    $MOUNT_POINT"
+        echo "  fix:     nas umount"
+        return 1
+        ;;
+    esac
+  fi
+
+  if is_mounted; then
+    pid=$(rclone_pid || true)
+    case $mode in
+      --quiet) return 0 ;;
+      --symbol)
+        printf 'NAS'
+        [[ -n $pid ]] && printf ' (pid %s)' "$pid"
+        return 0
+        ;;
+      *)
+        echo "nas: mounted"
+        echo "  remote:  $RCLONE_REMOTE"
+        echo "  path:    $MOUNT_POINT"
+        [[ -n $pid ]] && echo "  pid:     $pid"
+        echo "  log:     $LOG_FILE"
+        mount | /bin/grep -F "$MOUNT_POINT" || true
+        return 0
+        ;;
+    esac
+  fi
+
+  case $mode in
+    --quiet | --symbol) return 1 ;;
+    *)
+      echo "nas: not mounted"
+      echo "  remote:  $RCLONE_REMOTE"
+      echo "  path:    $MOUNT_POINT"
+      return 1
+      ;;
+  esac
+}
+
+main() {
+  case ${1:-mount} in
+    -h | --help | help) usage ;;
+    -V | --version) printf 'nas %s\n' "$VERSION" ;;
+    mount) shift; cmd_mount "$@" ;;
+    umount | unmount) shift; cmd_umount "$@" ;;
+    status) shift; cmd_status "${1:-}" ;;
+    '') cmd_mount ;;
+    *) die "unknown command: $1 (try: nas --help)" ;;
+  esac
+}
+
+main "$@"
