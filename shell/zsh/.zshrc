@@ -25,3 +25,7 @@ zstyle ':completion:*' list-colors ${(s.:.)LS_COLORS}
 zstyle ':fzf-tab:complete:cd:*' fzf-preview 'eza -1 --color=always $realpath'
 # switch group using `,` and `.`
 zstyle ':fzf-tab:*' switch-group ',' '.'
+# personal config for secrets
+[[ -r "$HOME/.config/secrets/secrets.env" ]] && source "$HOME/.config/secrets/secrets.env"
+# linuxbew config
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
