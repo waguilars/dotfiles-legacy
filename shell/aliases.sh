@@ -9,10 +9,10 @@ alias tree='eza --tree --icons'
 alias cat='bat'
 
 if [ -n "${ZSH_VERSION:-}" ]; then
-  whence compdef > /dev/null 2>&1 && compdef eza=ls
+  whence compdef >/dev/null 2>&1 && compdef eza=ls
 fi
 
-alias grep='rg --color=auto'
+# alias grep='rg --color=auto'
 alias diff='diff --color=auto'
 alias df='df -h'
 
@@ -23,6 +23,7 @@ alias ...="cd ../.."
 alias dotfiles='cd $DOTFILES_PATH'
 
 # Git
+alias gs='git status -sb'
 alias lzg='lazygit'
 
 # Docker
