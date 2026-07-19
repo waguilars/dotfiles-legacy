@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ssh-sync-host <user@host> [alias] [--key ~/.ssh/key] [--port 22] [--config ~/.ssh/config]
+
+Examples:
+  ssh-sync-host ubuntu@10.0.0.15
+  ssh-sync-host ubuntu@10.0.0.15 app-vm --key ~/.ssh/work
+  ssh-sync-host ubuntu@example.com prod-api --port 2222
+
+What it does:
+  1. Connects over SSH
+  2. If --key is provided, syncs the matching .pub key to the remote host
+  3. Runs 'hostname' on the remote VM
+  4. Uses that hostname as the SSH alias if you do not provide one
+  5. Replaces or appends the matching Host block in ~/.ssh/config
+EOF
+}
+
+fail() {
+  printf 'Error: %s\n' "$1" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" > /dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+is_ip_address() {
+  local value="$1"
+
+  [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 0
+  [[ "$value" == *:* ]] && return 0
+
+  return 1
+}
+
+resolve_to_ip() {
+  local host="$1"
+  local resolved_ip
+
+  if is_ip_address "$host"; then
+    printf '%s\n' "$host"
+    return 0
+  fi
+
+  resolved_ip="$(getent ahostsv4 "$host" 2> /dev/null | awk 'NR == 1 { print $1; exit }')"
+
+  if [[ -z "$resolved_ip" ]]; then
+    resolved_ip="$(getent ahosts "$host" 2> /dev/null | awk 'NR == 1 { print $1; exit }')"
+  fi
+
+  [[ -n "$resolved_ip" ]] || fail "Could not resolve host to IP: $host"
+
+  printf '%s\n' "$resolved_ip"
+}
+
+TARGET=""
+ALIAS=""
+KEYFILE=""
+PORT=""
+SSH_CONFIG="$HOME/.ssh/config"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --key)
+      [[ $# -ge 2 ]] || fail "--key requires a value"
+      KEYFILE="$2"
+      shift 2
+      ;;
+    --port)
+      [[ $# -ge 2 ]] || fail "--port requires a value"
+      PORT="$2"
+      shift 2
+      ;;
+    --config)
+      [[ $# -ge 2 ]] || fail "--config requires a value"
+      SSH_CONFIG="$2"
+      shift 2
+      ;;
+    --*)
+      fail "Unknown option: $1"
+      ;;
+    *)
+      if [[ -z "$TARGET" ]]; then
+        TARGET="$1"
+      elif [[ -z "$ALIAS" ]]; then
+        ALIAS="$1"
+      else
+        fail "Unexpected argument: $1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$TARGET" ]] || {
+  usage
+  exit 1
+}
+
+[[ "$TARGET" == *"@"* ]] || fail "Target must look like user@host"
+
+require_command ssh
+require_command ssh-copy-id
+require_command awk
+require_command getent
+require_command mktemp
+require_command sed
+
+SSH_ARGS=()
+KEYFILE_WAS_EXPLICIT=false
+PUBKEY_FILE=""
+
+if [[ -n "$KEYFILE" ]]; then
+  KEYFILE_WAS_EXPLICIT=true
+  KEYFILE="${KEYFILE/#\~/$HOME}"
+  [[ -f "$KEYFILE" ]] || fail "SSH key not found: $KEYFILE"
+  PUBKEY_FILE="${KEYFILE}.pub"
+  [[ -f "$PUBKEY_FILE" ]] || fail "SSH public key not found: $PUBKEY_FILE"
+  SSH_ARGS+=( -i "$KEYFILE" )
+fi
+
+REMOTE_USER="${TARGET%@*}"
+TARGET_HOST="${TARGET#*@}"
+MATCH_ALIAS="$ALIAS"
+
+if [[ -n "$PORT" ]]; then
+  SSH_ARGS+=( -p "$PORT" )
+fi
+
+SSH_EFFECTIVE_CONFIG="$(ssh -G "${SSH_ARGS[@]}" "$TARGET")"
+EFFECTIVE_HOST="$(printf '%s\n' "$SSH_EFFECTIVE_CONFIG" | awk '$1 == "hostname" { print $2; exit }')"
+EFFECTIVE_PORT="$(printf '%s\n' "$SSH_EFFECTIVE_CONFIG" | awk '$1 == "port" { print $2; exit }')"
+EFFECTIVE_IDENTITY_FILE="$(printf '%s\n' "$SSH_EFFECTIVE_CONFIG" | awk '$1 == "identityfile" { print $2; exit }')"
+
+[[ -n "$EFFECTIVE_HOST" ]] || fail "Could not determine effective SSH hostname for: $TARGET"
+
+REMOTE_HOST="$(resolve_to_ip "$EFFECTIVE_HOST")"
+if [[ -z "$PORT" && -n "$EFFECTIVE_PORT" && "$EFFECTIVE_PORT" != "22" ]]; then
+  PORT="$EFFECTIVE_PORT"
+fi
+
+if [[ -z "$KEYFILE" && -n "$EFFECTIVE_IDENTITY_FILE" ]]; then
+  KEYFILE="${EFFECTIVE_IDENTITY_FILE/#\~/$HOME}"
+fi
+
+if [[ "$KEYFILE_WAS_EXPLICIT" == true ]]; then
+  SSH_COPY_ID_ARGS=()
+
+  if [[ -n "$PORT" ]]; then
+    SSH_COPY_ID_ARGS+=( -p "$PORT" )
+  fi
+
+  SSH_COPY_ID_ARGS+=( -i "$PUBKEY_FILE" )
+
+  ssh-copy-id "${SSH_COPY_ID_ARGS[@]}" "$TARGET"
+fi
+
+REMOTE_HOSTNAME="$(ssh "${SSH_ARGS[@]}" "$TARGET" 'hostname' | tr -d '\r' | sed 's/^ *//; s/ *$//')"
+[[ -n "$REMOTE_HOSTNAME" ]] || fail "Remote hostname command returned an empty value"
+
+if [[ -z "$ALIAS" ]]; then
+  ALIAS="$REMOTE_HOSTNAME"
+fi
+
+if [[ -z "$MATCH_ALIAS" ]] && ! is_ip_address "$TARGET_HOST"; then
+  MATCH_ALIAS="$TARGET_HOST"
+fi
+
+mkdir -p "$(dirname "$SSH_CONFIG")"
+touch "$SSH_CONFIG"
+chmod 600 "$SSH_CONFIG"
+
+CONFIG_BLOCK=$(cat <<EOF
+Host $ALIAS
+  HostName $REMOTE_HOST
+  User $REMOTE_USER
+EOF
+)
+
+if [[ -n "$PORT" ]]; then
+  CONFIG_BLOCK+=$'\n'
+  CONFIG_BLOCK+="  Port $PORT"
+fi
+
+if [[ -n "$KEYFILE" ]]; then
+  CONFIG_BLOCK+=$'\n'
+  CONFIG_BLOCK+="  IdentityFile $KEYFILE"
+  CONFIG_BLOCK+=$'\n'
+  CONFIG_BLOCK+="  IdentitiesOnly yes"
+fi
+
+CONFIG_BLOCK+=$'\n'
+CONFIG_BLOCK+="# Remote hostname: $REMOTE_HOSTNAME"
+
+TMP_FILE="$(mktemp)"
+
+awk -v alias="$ALIAS" -v match_alias="$MATCH_ALIAS" -v block="$CONFIG_BLOCK" '
+  function host_matches_alias(   i) {
+    for (i = 2; i <= NF; i++) {
+      if ($i == alias || (match_alias != "" && $i == match_alias)) {
+        return 1
+      }
+    }
+    return 0
+  }
+
+  BEGIN {
+    in_block = 0
+    replaced = 0
+  }
+
+  $1 == "Host" {
+    if (in_block) {
+      in_block = 0
+    }
+
+    if (host_matches_alias()) {
+      if (!replaced) {
+        print block
+        replaced = 1
+      }
+      in_block = 1
+      next
+    }
+  }
+
+  {
+    if (!in_block) {
+      print
+    }
+  }
+
+  END {
+    if (!replaced) {
+      if (NR > 0) {
+        print ""
+      }
+      print block
+    }
+  }
+' "$SSH_CONFIG" > "$TMP_FILE"
+
+mv "$TMP_FILE" "$SSH_CONFIG"
+
+printf 'Remote hostname: %s\n' "$REMOTE_HOSTNAME"
+printf 'SSH alias: %s\n' "$ALIAS"
+printf 'Config updated: %s\n' "$SSH_CONFIG"
+printf 'Test with: ssh %s\n' "$ALIAS"
