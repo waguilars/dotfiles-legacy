@@ -20,6 +20,7 @@
     ~/.config/alacritty: shell/config/alacritty
     ~/.config/rofi: shell/config/rofi
     ~/.config/tilix: shell/config/tilix
+    ~/.config/waybar: shell/config/waybar
     ~/.config/starship.toml: shell/config/starship.toml
     ~/.tldrrc: shell/config/.tldrrc
     ~/.tmux.conf: shell/config/.tmux.conf

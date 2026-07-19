@@ -1,0 +1,100 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 30,
+    "margin": "5 8 0 8",
+    "spacing": 8,
+
+    "modules-left": ["cpu", "memory", "temperature"],
+    "modules-center": ["clock"],
+    "modules-right": ["pulseaudio", "network", "battery", "tray"],
+
+    "tray": {
+        "icon-size": 14,
+        "spacing": 10
+    },
+
+    "clock": {
+        "format": "{:%H:%M}",
+        "format-alt": "{:%a, %d %b %Y}",
+        "tooltip-format": "<tt><small>{calendar}</small></tt>",
+        "calendar": {
+            "mode": "year",
+            "weeks-pos": "right",
+            "mode-mon-col": 3,
+            "format": {
+                "months": "<span color='#acb0d0'><b>{}</b></span>",
+                "weeks": "<span color='#7aa2f7'><b>W{}</b></span>",
+                "weekdays": "<span color='#e0af68'><b>{}</b></span>",
+                "days": "<span color='#acb0d0'><b>{}</b></span>",
+                "today": "<span color='#41a6b5'><b><u>{}</u></b></span>"
+            }
+        }
+    },
+
+    "pulseaudio": {
+        "format": "{icon} {volume}%",
+        "format-bluetooth": "{icon} {volume}%",
+        "format-muted": "󰝟 Muted",
+        "tooltip-format": "{volume}%",
+        "scroll-step": 2,
+        "format-icons": {
+            "headphone": "󰋋",
+            "hands-free": "󰋋",
+            "headset": "󰋋",
+            "phone": "",
+            "portable": "",
+            "car": "",
+            "default": ["󰕿", "󰖀", "󰕾"]
+        }
+    },
+
+    "network": {
+        "interval": 10,
+        "format-wifi": "",
+        "format-ethernet": "󰈀",
+        "format-disconnected": "󰖪",
+        "format-disabled": "󰖪",
+        "tooltip-format-wifi": "{essid}\n{signalStrength}% signal\n{ipaddr}",
+        "tooltip-format-ethernet": "{ifname}\n{ipaddr}",
+        "tooltip-format-disconnected": "Disconnected"
+    },
+
+    "battery": {
+        "interval": 20,
+        "format": "{icon} {capacity}%",
+        "format-charging": " {capacity}%",
+        "format-plugged": " {capacity}%",
+        "tooltip": true,
+        "format-icons": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂂", "󰁹"],
+        "states": {
+            "warning": 30,
+            "critical": 15
+        }
+    },
+
+    "cpu": {
+        "interval": 10,
+        "format": " {usage}%",
+        "states": {
+            "warning": 80,
+            "critical": 90
+        }
+    },
+
+    "memory": {
+        "interval": 10,
+        "format": "󰍛 {percentage}%",
+        "states": {
+            "warning": 80,
+            "critical": 90
+        }
+    },
+
+    "temperature": {
+        "interval": 10,
+        "format": "{icon} {temperatureC}°",
+        "critical-threshold": 90,
+        "format-icons": ["", "", "", "", ""]
+    }
+}
