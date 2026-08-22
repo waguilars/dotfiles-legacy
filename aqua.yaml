@@ -28,3 +28,4 @@ packages:
 - name: jesseduffield/lazydocker@v0.25.2
 - name: trzsz/trzsz-ssh@v0.1.25
 - name: Adembc/lazyssh@v0.3.0
+- name: tldr-pages/tlrc@v1.13.1

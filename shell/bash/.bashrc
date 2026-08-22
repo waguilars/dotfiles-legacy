@@ -31,7 +31,7 @@ if [[ "$(ps -p $$ -ocomm=)" =~ (bash$) ]]; then
 
     if
       [[ -n "${THEME_COMMAND:-}" ]] &&
-      declare -F "${THEME_COMMAND:-}" &> /dev/null
+        declare -F "${THEME_COMMAND:-}" &>/dev/null
     then
       "${THEME_COMMAND:-}"
     fi

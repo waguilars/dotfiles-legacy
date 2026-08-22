@@ -2,9 +2,9 @@
 alias sudo='sudo '
 
 # Replace base for better commands
-alias ls='eza --icons'
-alias ll='eza -lh --icons --git'
-alias la='eza -lah --icons --git'
+alias ls='eza -g --icons'
+alias ll='eza -lgh --icons --git'
+alias la='eza -lgah --icons --git'
 alias tree='eza --tree --icons'
 alias cat='bat'
 
