@@ -22,6 +22,7 @@
     ~/.config/tilix: shell/config/tilix
     ~/.config/waybar: shell/config/waybar
     ~/.config/starship.toml: shell/config/starship.toml
+    ~/.config/nvim: editors/nvim
     ~/.tldrrc: shell/config/.tldrrc
     ~/.tmux.conf: shell/config/.tmux.conf
     ~/.tmux.conf.local: shell/config/.tmux.conf.local
