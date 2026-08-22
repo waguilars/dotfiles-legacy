@@ -1,5 +1,7 @@
 git/gitconfig.local
 .atl/
+.codegraph/
+.pi/
 bin/work/*
 !bin/work/.gitkeep
 
