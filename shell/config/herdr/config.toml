@@ -1,0 +1,21 @@
+onboarding = false
+
+[ui]
+agent_panel_sort = "spaces"
+
+[keys]
+# Match tmux/Zellij-style prefix muscle memory.
+prefix = "ctrl+a"
+
+# Move between agents in the sidebar with vertical arrows.
+previous_agent = "prefix+up"
+next_agent = "prefix+down"
+
+# Jump straight to agent N (1..9) as listed in the sidebar.
+# Use Ctrl after the prefix: Alt+number is owned by skhd/yabai spaces,
+# and Shift+number did not reach Herdr reliably in the current terminal setup.
+focus_agent = "prefix+ctrl+1..9"
+
+# Move between tabs with the prefix and horizontal arrows.
+previous_tab = "prefix+left"
+next_tab = "prefix+right"
