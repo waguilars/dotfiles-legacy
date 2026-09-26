@@ -11,7 +11,6 @@ setopt +o nomatch
 source "$DOTFILES_PATH/shell/init.sh"
 source "$DOTFILES_PATH/shell/hooks/_init.sh"
 
-source "$DOTLY_PATH/shell/zsh/bindings/dot.zsh"
 source "$DOTFILES_PATH/shell/zsh/key-bindings.zsh"
 source "$DOTFILES_PATH/shell/zsh/plugins/sudo.zsh"
 
