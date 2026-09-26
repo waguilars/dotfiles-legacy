@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+for command in tesseract wl-copy notify-send; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    printf 'ocr: missing dependency: %s\n' "$command" >&2
+    exit 1
+  fi
+done
+
+image=$(mktemp --suffix=.png)
+trap 'rm -f "$image"' EXIT
+
+# KDE Wayland does not expose the screencopy protocol required by grim.
+if [[ ${XDG_CURRENT_DESKTOP:-} == *KDE* ]]; then
+  capture=(spectacle -b -r -k -n -o "$image")
+  required=(spectacle)
+else
+  required=(slurp grim)
+fi
+for command in "${required[@]}"; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    printf 'ocr: missing dependency: %s\n' "$command" >&2
+    exit 1
+  fi
+done
+
+if [[ ${XDG_CURRENT_DESKTOP:-} == *KDE* ]]; then
+  if ! "${capture[@]}"; then
+    notify-send 'OCR failed' 'Could not capture the selected region with Spectacle.'
+    exit 1
+  fi
+else
+  if ! region=$(slurp) || [[ -z "$region" ]]; then
+    exit 0
+  fi
+  if ! grim -g "$region" "$image"; then
+    notify-send 'OCR failed' 'Could not capture the selected region with grim.'
+    exit 1
+  fi
+fi
+
+if [[ ! -s "$image" ]]; then
+  notify-send 'OCR' 'Capture cancelled or empty.'
+  exit 0
+fi
+
+if ! text=$(tesseract "$image" stdout -l eng+spa 2>/dev/null); then
+  notify-send 'OCR failed' 'Tesseract could not recognize the image.'
+  exit 1
+fi
+
+if [[ -z "${text//[[:space:]]/}" ]]; then
+  notify-send 'OCR' 'No text found in the selected region.'
+  exit 0
+fi
+
+if ! printf '%s' "$text" | wl-copy; then
+  notify-send 'OCR failed' 'Could not copy text to the clipboard.'
+  exit 1
+fi
+
+notify-send 'OCR' 'Recognized text copied to the clipboard (English + Spanish).'
