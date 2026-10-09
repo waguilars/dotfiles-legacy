@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+VAULT_ROOT="${ENGRAM_OBSIDIAN_VAULT:-$HOME/Obsidian/engram}"
+
+usage() {
+  cat <<'EOF'
+Usage: engram-export [engram obsidian-export options]
+
+Export or incrementally update Engram memories in the Obsidian vault.
+
+Default vault root:
+  $HOME/Obsidian/engram
+
+Exported memories:
+  $HOME/Obsidian/engram/engram
+
+Environment:
+  ENGRAM_OBSIDIAN_VAULT  Override the default Obsidian vault root.
+
+Examples:
+  engram-export
+  engram-export --force
+  engram-export --project dotfiles-legacy
+  ENGRAM_OBSIDIAN_VAULT="$HOME/Documents/Obsidian" engram-export
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if ! command -v engram >/dev/null 2>&1; then
+  printf 'Error: engram is not available in PATH.\n' >&2
+  exit 1
+fi
+
+if [[ ! -d "$VAULT_ROOT" ]]; then
+  printf 'Error: Obsidian vault not found: %s\n' "$VAULT_ROOT" >&2
+  exit 1
+fi
+
+engram obsidian-export --vault "$VAULT_ROOT" "$@"
