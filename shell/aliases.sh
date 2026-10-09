@@ -2,10 +2,10 @@
 alias sudo='sudo '
 
 # Replace base for better commands
-alias ls='eza -g --icons'
+alias ls='eza -g --icons --git'
 alias ll='eza -lgh --icons --git'
 alias la='eza -lgah --icons --git'
-alias tree='eza --tree --icons'
+alias tree='eza --tree --icons --git'
 alias cat='bat'
 
 if [ -n "${ZSH_VERSION:-}" ]; then
