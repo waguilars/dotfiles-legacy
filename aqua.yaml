@@ -29,3 +29,4 @@ packages:
 - name: trzsz/trzsz-ssh@v0.1.25
 - name: Adembc/lazyssh@v0.3.0
 - name: tldr-pages/tlrc@v1.13.1
+- name: cli/cli@v2.101.0
