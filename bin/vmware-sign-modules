@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+KERNEL="$(uname -r)"
+SIGN="/usr/src/kernels/$KERNEL/scripts/sign-file"
+PRIVATE_KEY="/etc/pki/akmods/private/private_key.priv"
+PUBLIC_KEY="/etc/pki/akmods/certs/public_key.der"
+
+for required_command in modinfo sudo; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    printf 'Error: required command not found: %s\n' "$required_command" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -x "$SIGN" ]]; then
+  printf 'Error: signing tool not found or not executable: %s\n' "$SIGN" >&2
+  exit 1
+fi
+
+for file in "$PRIVATE_KEY" "$PUBLIC_KEY"; do
+  if ! sudo test -f "$file"; then
+    printf 'Error: required file not found: %s\n' "$file" >&2
+    exit 1
+  fi
+done
+
+sign_module() {
+  local module="$1"
+  local module_path signer
+
+  if ! module_path="$(modinfo -n "$module" 2>/dev/null)" || [[ ! -f "$module_path" ]]; then
+    printf 'Error: module not found: %s\n' "$module" >&2
+    return 1
+  fi
+
+  if ! signer="$(modinfo -F signer "$module_path" 2>/dev/null)"; then
+    printf 'Error: could not inspect module signature: %s\n' "$module" >&2
+    return 1
+  fi
+
+  if [[ -n "$signer" ]]; then
+    printf 'Skipping %s: already signed by %s\n' "$module" "$signer"
+    return 0
+  fi
+
+  printf 'Signing %s (%s)\n' "$module" "$module_path"
+  sudo "$SIGN" sha256 \
+    "$PRIVATE_KEY" \
+    "$PUBLIC_KEY" \
+    "$module_path"
+}
+
+sign_module vmmon
+sign_module vmnet
