@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-branches=$(git branch --merged| egrep -v "(^\*|master|main|develop)")
+branches=$(git branch --merged | grep -Ev '(^\*|master|main|develop)')
 
 if [ -n "$branches" ]
 then
