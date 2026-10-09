@@ -2,6 +2,7 @@ onboarding = false
 
 [ui]
 agent_panel_sort = "spaces"
+prompt_new_tab_name = false
 
 [keys]
 # Match tmux/Zellij-style prefix muscle memory.
@@ -19,3 +20,9 @@ focus_agent = "prefix+ctrl+1..9"
 # Move between tabs with the prefix and horizontal arrows.
 previous_tab = "prefix+left"
 next_tab = "prefix+right"
+
+[[keys.command]]
+key = "prefix+space"
+type = "plugin_action"
+command = "fullerzz.sesh.open-picker"
+description = "open Sesh picker"

@@ -28,3 +28,8 @@ zstyle ':fzf-tab:*' switch-group ',' '.'
 [[ -r "$HOME/.config/secrets/secrets.env" ]] && source "$HOME/.config/secrets/secrets.env"
 # linuxbew config
 eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
+
+# Rename Herdr tabs as foreground commands start.
+for _f in ${HOME}/.config/herdr/plugins/github/herdr-automatic-rename-*/shell/hook.zsh(N); do
+  source $_f; break
+done
