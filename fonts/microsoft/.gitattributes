@@ -1,0 +1,5 @@
+# Preserve upstream font binaries and the original license document byte-for-byte.
+*.ttf -text -diff
+*.TTF -text -diff
+*.ttc -text -diff
+*.rtf -text -diff
