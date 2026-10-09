@@ -13,10 +13,12 @@ export GEM_HOME="$HOME/.gem"
 export GOPATH="$HOME/.go"
 export DENO_INSTALL="$HOME/.deno"
 export BUN_INSTALL="$HOME/.bun"
+export KAFKA_HOME="/opt/Kafka/current"
 
 # ------------------------------------------------------------------------------
 # Custom Exports
 # ------------------------------------------------------------------------------
+export EDITOR="nvim"
 export IDEA_INSTALL_DIR="$HOME/.local/share/JetBrains/Toolbox/apps/intellij-idea"
 export AQUA_ROOT_DIR="$HOME/.local/share/aquaproj-aqua"
 export AQUA_GLOBAL_CONFIG="$HOME/.dotfiles/aqua.yaml"
@@ -43,6 +45,7 @@ export FZF_DEFAULT_OPTS="
 # ------------------------------------------------------------------------------
 export path=(
   "$DOTFILES_PATH/bin/work"
+  "$KAFKA_HOME/bin"
   "$IDEA_INSTALL_DIR/bin"
   "$HOME/.opencode/bin"
   "$PNPM_HOME/bin"
