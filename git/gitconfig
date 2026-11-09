@@ -19,6 +19,7 @@
 	eol = lf
 	pager = delta
 	excludesfile = ~/.gitignore_global
+	hooksPath = /home/waguilar/.config/git/hooks
 
 [interactive]
 	diffFilter = delta --color-only
