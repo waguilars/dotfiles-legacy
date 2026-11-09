@@ -1,9 +1,11 @@
 onboarding = false
 
 [ui]
+sidebar_collapsed_mode = "compact"
 agent_panel_sort = "spaces"
 prompt_new_tab_name = false
 
+status_indicators = "symbols"
 [keys]
 # Match tmux/Zellij-style prefix muscle memory.
 prefix = "ctrl+a"
@@ -26,3 +28,13 @@ key = "prefix+space"
 type = "plugin_action"
 command = "fullerzz.sesh.open-picker"
 description = "open Sesh picker"
+
+[ui.sound]
+enabled = true
+
+[theme]
+name = "catppuccin"
+auto_switch = false
+
+[ui.toast]
+delivery = "system"
