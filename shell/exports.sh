@@ -36,6 +36,8 @@ export FZF_DEFAULT_OPTS="
 --reverse
 "
 
+export ENGRAM_CLOUD_AUTOSYNC=1
+
 # ------------------------------------------------------------------------------
 # Apps
 # ------------------------------------------------------------------------------
@@ -51,6 +53,7 @@ export FZF_DEFAULT_OPTS="
 # Path - The higher it is, the more priority it has
 # ------------------------------------------------------------------------------
 export path=(
+  "$HOME/.gentle-ai/bin"
   "$DOTFILES_PATH/bin/work"
   "$KAFKA_HOME/bin"
   "$IDEA_INSTALL_DIR/bin"
