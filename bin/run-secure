@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# run-secure — inject a token from pass(1) into a command's environment.
+#
+# Usage: run-secure ENV_NAME PASS_KEY COMMAND [ARGS...]
+#
+# The first line of the pass entry becomes ENV_NAME. The token is never
+# printed, never placed in argv, and never exported by the caller's shell.
+# Every precondition failure exits nonzero without touching the command.
+
+set -euo pipefail
+
+# Usage / help must never touch secrets.
+usage() {
+  cat <<'EOF'
+Usage: run-secure ENV_NAME PASS_KEY COMMAND [ARGS...]
+
+Retrieve a token from pass and inject it only into the launched
+process environment as ENV_NAME. The first line of the pass entry
+is the token.
+
+Examples:
+  run-secure API_TOKEN services/example/api ./client --token-from-env
+
+The command should read the variable from its own environment. Do not
+interpolate the variable in the parent shell (for example in curl -H
+"Authorization: Bearer $VAR"): shell expansion places the secret into
+the command's argv, where other same-user processes can read it.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+# Hardening before any internal variable is assigned:
+# - never auto-export internals, even when Bash imported allexport from an
+#   inherited SHELLOPTS environment variable;
+# - never trace secret handling, even under `bash -x` or an inherited
+#   SHELLOPTS=xtrace;
+# - drop inherited export state of all internal helper names so an
+#   inherited exported helper cannot leak the full pass entry or expose a
+#   duplicate token in the child environment.
+set +a
+unset -v _run_secure_xfd _run_secure_entry _run_secure_token \
+  _run_secure_env_name _run_secure_pass_key
+
+# Suppress shell tracing before any secret is handled. This covers both a
+# plain `set -x` state and an explicit `bash -x run-secure` invocation:
+# xtrace output is redirected away from stderr and then switched off, so a
+# trace can never echo the token-bearing assignment or command line.
+if [[ $- == *x* ]]; then
+  exec {_run_secure_xfd}>/dev/null
+  BASH_XTRACEFD="$_run_secure_xfd"
+  set +x
+  exec {_run_secure_xfd}>&-   # closes the fd and unsets the helper
+else
+  set +x
+fi
+
+if [[ $# -lt 3 ]]; then
+  usage >&2
+  exit 1
+fi
+
+_run_secure_env_name=$1
+_run_secure_pass_key=$2
+shift 2
+
+# Validate the variable name so `export "$name"` cannot be abused to
+# export arbitrary control names.
+if [[ ! $_run_secure_env_name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  printf 'Error: invalid environment variable name: %s\n' \
+    "$_run_secure_env_name" >&2
+  exit 1
+fi
+
+# Reserved Bash names are rejected before retrieval: exporting a token
+# into them either mutates shell control state or makes Bash evaluate the
+# value and echo it in a diagnostic (BASH_XTRACEFD, RANDOM, ...). The
+# BASH* prefix covers BASH_ENV, BASHOPTS, BASH_XTRACEFD and every other
+# Bash-managed name.
+case $_run_secure_env_name in
+  BASH*|SHELLOPTS|UID|EUID|PPID|RANDOM|SECONDS|LINENO|HISTCMD|OPTIND|SHLVL)
+    printf 'Error: reserved Bash variable name: %s\n' \
+      "$_run_secure_env_name" >&2
+    exit 1 ;;
+esac
+
+if ! command -v pass >/dev/null 2>&1; then
+  printf 'Error: pass is not available in PATH.\n' >&2
+  exit 1
+fi
+
+# Read the entry with pass stderr suppressed so retrieval diagnostics can
+# never echo secret material. The key is passed after -- so keys that
+# start with a dash are treated as entry paths, not pass options.
+if ! _run_secure_entry="$(pass show -- "$_run_secure_pass_key" 2>/dev/null)"
+then
+  printf 'Error: pass retrieval failed.\n' >&2
+  exit 1
+fi
+
+_run_secure_token="${_run_secure_entry%%$'\n'*}"
+
+if [[ -z $_run_secure_token ]]; then
+  printf 'Error: pass entry has an empty first line.\n' >&2
+  exit 1
+fi
+
+# Drop the full entry (the only secret-bearing multiline value)
+# unconditionally before the target assignment. If the caller requested
+# this exact name as the target, the export below recreates it holding
+# only the first line.
+unset -v _run_secure_entry
+
+export "$_run_secure_env_name"="$_run_secure_token"
+
+# Every remaining helper is unexported (startup sanitation plus `set +a`),
+# so they die with the shell on exec; no post-export cleanup is needed and
+# the exported target must not be touched again.
+
+# Replace the shell with the command: arguments pass through verbatim and
+# the exit status is the command's own. Unexported internal variables die
+# with the shell. The command is passed after -- so a leading-dash name is
+# never parsed as an exec option.
+exec -- "$@"
