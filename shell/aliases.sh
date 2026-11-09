@@ -27,7 +27,7 @@ alias gs='git status -sb'
 alias lzg='lazygit'
 
 # Docker
-alias lzd='lazydocker'
+alias lzd='lazypodman'
 
 # Utils
 alias k='kill -9'
