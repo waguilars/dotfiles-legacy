@@ -11,6 +11,13 @@ export CODELY_THEME_PWD_MODE="short" # full, short, home_relative
 # ------------------------------------------------------------------------------
 export GEM_HOME="$HOME/.gem"
 export GOPATH="$HOME/.go"
+# mise's `activate` emits `unset GOBIN` and its hook-env then points GOBIN at the
+# Go install dir, so `go install` placed binaries inside
+# ~/.local/share/mise/installs/go/<version>/bin and dropped them on every Go
+# upgrade. Opt out of that (must precede `mise activate`, which runs after this
+# file) so `go install` uses the default $GOPATH/bin, already on PATH.
+export MISE_GO_SET_GOBIN=false
+export GOBIN="$GOPATH/bin"
 export DENO_INSTALL="$HOME/.deno"
 export BUN_INSTALL="$HOME/.bun"
 export KAFKA_HOME="/opt/Kafka/current"
